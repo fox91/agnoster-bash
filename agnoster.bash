@@ -86,6 +86,23 @@ RIGHT_SEPARATOR=''
 LEFT_SUBSEG=''
 RIGHT_SUBSEG=''
 
+case ${SOLARIZED_THEME:-dark} in
+    light)
+      CURRENT_FG=${CURRENT_FG:-'white'}
+      CURRENT_DEFAULT_FG=${CURRENT_DEFAULT_FG:-'white'}
+      ;;
+    *)
+      CURRENT_FG=${CURRENT_FG:-'black'}
+      CURRENT_DEFAULT_FG=${CURRENT_DEFAULT_FG:-'default'}
+      ;;
+esac
+
+# Git related
+AGNOSTER_GIT_CLEAN_FG=${CURRENT_FG}
+AGNOSTER_GIT_CLEAN_BG=green
+AGNOSTER_GIT_DIRTY_FG=black
+AGNOSTER_GIT_DIRTY_BG=yellow
+
 text_effect() {
     case "$1" in
         reset)      echo 0;;
@@ -245,10 +262,43 @@ prompt_histdt() {
     prompt_segment black default "\! [\A]"
 }
 
+# The git prompt's git commands are read-only and should not interfere with
+# other processes. This environment variable is equivalent to running with `git
+# --no-optional-locks`, but falls back gracefully for older versions of git.
+# See git(1) for and git-status(1) for a description of that flag.
+#
+# We wrap in a local function instead of exporting the variable directly in
+# order to avoid interfering with manually-run git commands by the user.
+__git_prompt_git() {
+  GIT_OPTIONAL_LOCKS=0 command git "$@"
+}
 
-git_status_dirty() {
-    dirty=$(git status -s 2> /dev/null | tail -n 1)
-    [[ -n $dirty ]] && echo " ●"
+# Checks if working tree is dirty
+parse_git_dirty() {
+  local STATUS
+  local -a FLAGS
+  FLAGS=('--porcelain')
+  if [[ "$(__git_prompt_git config --get oh-my-zsh.hide-dirty)" != "1" ]]; then
+    if [[ "${DISABLE_UNTRACKED_FILES_DIRTY:-}" == "true" ]]; then
+      FLAGS+='--untracked-files=no'
+    fi
+    case "${GIT_STATUS_IGNORE_SUBMODULES:-}" in
+      git)
+        # let git decide (this respects per-repo config in .gitmodules)
+        ;;
+      *)
+        # if unset: ignore dirty submodules
+        # other values are passed to --ignore-submodules
+        FLAGS+="--ignore-submodules=${GIT_STATUS_IGNORE_SUBMODULES:-dirty}"
+        ;;
+    esac
+    STATUS=$(__git_prompt_git status ${FLAGS} 2> /dev/null | tail -n 1)
+  fi
+  if [[ -n $STATUS ]]; then
+    echo "$ZSH_THEME_GIT_PROMPT_DIRTY"
+  else
+    echo "$ZSH_THEME_GIT_PROMPT_CLEAN"
+  fi
 }
 
 git_stash_dirty() {
@@ -258,21 +308,49 @@ git_stash_dirty() {
 
 # Git: branch/detached head, dirty status
 prompt_git() {
-    local ref dirty
-    if $(git rev-parse --is-inside-work-tree >/dev/null 2>&1); then
-        ZSH_THEME_GIT_PROMPT_DIRTY='±'
-        dirty=$(git_status_dirty)
-        stash=$(git_stash_dirty)
-        ref=$(git symbolic-ref HEAD 2> /dev/null) \
-            || ref="➦ $(git describe --exact-match --tags HEAD 2> /dev/null)" \
-            || ref="➦ $(git show-ref --head -s --abbrev | head -n1 2> /dev/null)"
-        if [[ -n $dirty ]]; then
-            prompt_segment yellow black
-        else
-            prompt_segment darkgreen black
-        fi
-        PR="$PR${ref/refs\/heads\// }$stash$dirty"
+  if [[ "$(command git config --get oh-my-zsh.hide-status 2>/dev/null)" = 1 ]]; then
+    return
+  fi
+  local PL_BRANCH_CHAR
+  {
+    # local LC_ALL="" LC_CTYPE="en_US.UTF-8"
+    PL_BRANCH_CHAR=$'\ue0a0'         # 
+  }
+  local ref dirty mode repo_path
+  if [[ "$(command git rev-parse --is-inside-work-tree 2>/dev/null)" = "true" ]]; then
+    repo_path=$(command git rev-parse --git-dir 2>/dev/null)
+    dirty=$(parse_git_dirty)
+    ref=$(command git symbolic-ref HEAD 2> /dev/null) || \
+    ref="◈ $(command git describe --exact-match --tags HEAD 2> /dev/null)" || \
+    ref="➦ $(command git rev-parse --short HEAD 2> /dev/null)"
+    if [[ -n $dirty ]]; then
+      prompt_segment "$AGNOSTER_GIT_DIRTY_BG" "$AGNOSTER_GIT_DIRTY_FG"
+    else
+      prompt_segment "$AGNOSTER_GIT_CLEAN_BG" "$AGNOSTER_GIT_CLEAN_FG"
     fi
+
+    if [[ $AGNOSTER_GIT_BRANCH_STATUS == 'true' ]]; then
+      local ahead behind
+      ahead=$(command git log --oneline '@{upstream}..' 2>/dev/null)
+      behind=$(command git log --oneline '..@{upstream}' 2>/dev/null)
+      if [[ -n "$ahead" ]] && [[ -n "$behind" ]]; then
+        PL_BRANCH_CHAR=$'\u21c5'
+      elif [[ -n "$ahead" ]]; then
+        PL_BRANCH_CHAR=$'\u21b1'
+      elif [[ -n "$behind" ]]; then
+        PL_BRANCH_CHAR=$'\u21b0'
+      fi
+    fi
+
+    if [[ -e "${repo_path}/BISECT_LOG" ]]; then
+      mode=" <B>"
+    elif [[ -e "${repo_path}/MERGE_HEAD" ]]; then
+      mode=" >M<"
+    elif [[ -e "${repo_path}/rebase" || -e "${repo_path}/rebase-apply" || -e "${repo_path}/rebase-merge" || -e "${repo_path}/../.dotest" ]]; then
+      mode=" >R>"
+    fi
+    PR="$PR${ref/refs\/heads\// }$stash$dirty"
+  fi
 }
 
 # Mercurial: clean, modified and uncomitted files
@@ -448,13 +526,24 @@ prompt_emacsdir() {
 ## Main prompt
 
 build_prompt() {
-    [[ ! -z ${AG_EMACS_DIR+x} ]] && prompt_emacsdir
+    # [[ ! -z ${AG_EMACS_DIR+x} ]] && prompt_emacsdir
+    # prompt_status
+    # #[[ -z ${AG_NO_HIST+x} ]] && prompt_histdt
+    # [[ -z ${AG_NO_CONTEXT+x} ]] && prompt_context
+    # prompt_virtualenv
+    # prompt_dir
+    # prompt_git
+    # prompt_hg
+    # prompt_end
+
     prompt_status
-    #[[ -z ${AG_NO_HIST+x} ]] && prompt_histdt
-    [[ -z ${AG_NO_CONTEXT+x} ]] && prompt_context
     prompt_virtualenv
+    # prompt_aws
+    # prompt_terraform
+    [[ -z ${AG_NO_CONTEXT+x} ]] && prompt_context
     prompt_dir
     prompt_git
+    # prompt_bzr
     prompt_hg
     prompt_end
 }
